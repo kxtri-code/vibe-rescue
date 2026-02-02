@@ -1,4 +1,3 @@
-from datetime import datetime
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from pymongo import MongoClient
@@ -8,6 +7,7 @@ import google.generativeai as genai
 from bson.objectid import ObjectId
 import json
 import re
+from datetime import datetime
 
 # 1. SETUP
 load_dotenv()
@@ -22,7 +22,7 @@ db = client.get_database('project_vibe')
 # 3. AI CONFIGURATION
 GENAI_API_KEY = os.getenv("GENAI_API_KEY")
 if not GENAI_API_KEY:
-    print("⚠️ CRITICAL: GENAI_API_KEY is missing from Environment Variables!")
+    print("⚠️ CRITICAL: GENAI_API_KEY is missing!")
 else:
     genai.configure(api_key=GENAI_API_KEY)
 
@@ -32,26 +32,13 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # --- SMART MODEL SELECTOR ---
 def generate_event_details(file_path):
-    possible_models = [
-        "gemini-flash-latest",    # Fast & New
-        "gemini-1.5-flash",       # Standard
-        "gemini-1.5-pro",         # High Intelligence
-        "gemini-pro"              # Old Reliable
-    ]
-    
+    possible_models = ["gemini-flash-latest", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
     myfile = genai.upload_file(file_path)
     
-    # --- CRITICAL FIX: We force the AI to use specific JSON keys ---
     prompt = """
-    Analyze this event flyer. Extract details and return ONLY a JSON object.
-    Use these EXACT keys:
-    - "event_name" (String)
-    - "venue" (String)
-    - "date" (String, format YYYY-MM-DD)
-    - "time" (String)
-    - "vibe" (Array of 3 strings max)
-    
-    Do not add markdown formatting. Just the raw JSON.
+    Analyze this flyer. Extract details into JSON.
+    Keys: "event_name", "venue", "date" (YYYY-MM-DD), "time", "vibe" (Array of 3 strings).
+    Do not use markdown.
     """
 
     last_error = None
@@ -60,7 +47,6 @@ def generate_event_details(file_path):
             print(f"🤖 Trying model: {model_name}...")
             model = genai.GenerativeModel(model_name)
             result = model.generate_content([myfile, prompt])
-            print(f"✅ Success with {model_name}!")
             return result.text
         except Exception as e:
             print(f"⚠️ Failed with {model_name}: {e}")
@@ -74,6 +60,7 @@ def generate_event_details(file_path):
 def home():
     return "Project Vibe Brain is Active! 🧠"
 
+# A. SCANNER (Now saves WHO created it)
 @app.route('/api/scan', methods=['POST'])
 def scan_flyer():
     try:
@@ -81,32 +68,28 @@ def scan_flyer():
             return jsonify({"error": "No photo uploaded"}), 400
         
         file = request.files['photo']
+        user_email = request.form.get('user_email', 'Anonymous') # <--- CAPTURE CREATOR
+        
         filename = f"{os.urandom(4).hex()}_{file.filename}"
         filepath = os.path.join(UPLOAD_FOLDER, filename)
         file.save(filepath)
 
         # AI PROCESSING
         ai_text = generate_event_details(filepath)
-        
-        # CLEANUP: Remove ```json and ``` if the AI adds them
         clean_text = re.sub(r'```json\s*|\s*```', '', ai_text).strip()
         
-        # PARSE JSON
         try:
             data = json.loads(clean_text)
-        except json.JSONDecodeError:
-            # Fallback: try to find the JSON object inside the text
+        except:
             start = clean_text.find('{')
             end = clean_text.rfind('}') + 1
-            if start != -1 and end != -1:
-                data = json.loads(clean_text[start:end])
-            else:
-                raise ValueError("AI did not return valid JSON")
+            data = json.loads(clean_text[start:end])
 
-        # Add image URL and Save
+        # Add Metadata
         data['image_url'] = f"/uploads/{filename}"
-        new_id = db.events.insert_one(data).inserted_id
+        data['created_by'] = user_email  # <--- SAVE CREATOR
         
+        new_id = db.events.insert_one(data).inserted_id
         data['_id'] = str(new_id)
         return jsonify(data), 200
 
@@ -125,83 +108,50 @@ def get_events():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# B. DELETE (Only works if logic allows, mainly handled on frontend for now)
 @app.route('/api/events/<event_id>', methods=['DELETE'])
 def delete_event(event_id):
     try:
+        # Ideally, we would check the user here too, but let's start with frontend protection
         result = db.events.delete_one({'_id': ObjectId(event_id)})
         return jsonify({"message": "Deleted"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    
-    # E. TOGGLE LIKE (The "Heart" Update)
+
 @app.route('/api/events/<event_id>/like', methods=['PUT'])
 def toggle_like(event_id):
     try:
-        # 1. Find the event
         event = db.events.find_one({'_id': ObjectId(event_id)})
-        if not event:
-            return jsonify({"error": "Event not found"}), 404
-            
-        # 2. Flip the 'liked' status (True -> False, or False -> True)
-        current_status = event.get('liked', False)
-        new_status = not current_status
-        
-        # 3. Save to DB
-        db.events.update_one(
-            {'_id': ObjectId(event_id)}, 
-            {'$set': {'liked': new_status}}
-        )
-        
+        if not event: return jsonify({"error": "Not found"}), 404
+        new_status = not event.get('liked', False)
+        db.events.update_one({'_id': ObjectId(event_id)}, {'$set': {'liked': new_status}})
         return jsonify({"message": "Updated", "liked": new_status}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    
-    # F. EDIT EVENT DETAILS (Fixing AI Mistakes)
-@app.route('/api/events/<event_id>', methods=['PUT'])
-def update_event(event_id):
-    try:
-        data = request.json
-        # We only allow updating these specific text fields
-        allowed_keys = ['event_name', 'venue', 'date', 'time']
-        
-        # Create a clean update object
-        update_data = {k: v for k, v in data.items() if k in allowed_keys}
-        
-        if not update_data:
-             return jsonify({"error": "No valid fields to update"}), 400
 
-        # Update the database
-        db.events.update_one(
-            {'_id': ObjectId(event_id)}, 
-            {'$set': update_data}
-        )
-        return jsonify({"message": "Event Updated Successfully"}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    
-    # G. ADD COMMENT (The "Vibe Check")
 @app.route('/api/events/<event_id>/comment', methods=['POST'])
 def add_comment(event_id):
     try:
         data = request.json
-        # Create a simple comment object
         comment = {
             "id": os.urandom(4).hex(),
-            "user": data.get("user", "Anonymous"), # We will send the user's email
+            "user": data.get("user", "Anonymous"),
             "text": data.get("text", ""),
             "timestamp": datetime.now().isoformat()
         }
-        
-        if not comment["text"]:
-            return jsonify({"error": "Comment cannot be empty"}), 400
-
-        # Push into the 'comments' array of the event
-        db.events.update_one(
-            {'_id': ObjectId(event_id)}, 
-            {'$push': {'comments': comment}}
-        )
-        
+        db.events.update_one({'_id': ObjectId(event_id)}, {'$push': {'comments': comment}})
         return jsonify(comment), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/events/<event_id>', methods=['PUT'])
+def update_event(event_id):
+    try:
+        data = request.json
+        allowed = ['event_name', 'venue', 'date', 'time']
+        update_data = {k: v for k, v in data.items() if k in allowed}
+        db.events.update_one({'_id': ObjectId(event_id)}, {'$set': update_data})
+        return jsonify({"message": "Updated"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
