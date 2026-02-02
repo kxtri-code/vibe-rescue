@@ -4,7 +4,7 @@ from pymongo import MongoClient
 import os
 from dotenv import load_dotenv
 import google.generativeai as genai
-from bson.objectid import ObjectId # Import for handling IDs
+from bson.objectid import ObjectId
 
 # 1. SETUP
 load_dotenv()
@@ -13,14 +13,17 @@ CORS(app)
 
 # 2. DATABASE CONNECTION
 MONGO_URI = os.getenv("MONGO_URI")
+if not MONGO_URI:
+    print("⚠️ WARNING: MONGO_URI is missing!")
 client = MongoClient(MONGO_URI)
 db = client.get_database('project_vibe') 
-# Note: Ensure your .env file has the correct MONGO_URI
-# If your DB name in Mongo Atlas is distinct, allow the URI to handle it or specify db = client['your_db_name']
 
 # 3. AI CONFIGURATION
 GENAI_API_KEY = os.getenv("GENAI_API_KEY")
-genai.configure(api_key=GENAI_API_KEY)
+if not GENAI_API_KEY:
+    print("⚠️ WARNING: GENAI_API_KEY is missing!")
+else:
+    genai.configure(api_key=GENAI_API_KEY)
 
 # 4. UPLOAD FOLDER
 UPLOAD_FOLDER = 'uploads'
@@ -40,14 +43,15 @@ def scan_flyer():
             return jsonify({"error": "No photo uploaded"}), 400
         
         file = request.files['photo']
-        # Save file locally
         filename = f"{os.urandom(4).hex()}_{file.filename}"
         filepath = os.path.join(UPLOAD_FOLDER, filename)
         file.save(filepath)
 
         # Upload to Gemini AI
         myfile = genai.upload_file(filepath)
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        
+        # --- CRITICAL FIX: Use the specific model version ---
+        model = genai.GenerativeModel("gemini-1.5-flash-001") 
         
         # Ask AI to extract details
         result = model.generate_content(
@@ -70,16 +74,16 @@ def scan_flyer():
         return jsonify(data), 200
 
     except Exception as e:
+        print(f"ERROR: {e}") # Print error to logs
         return jsonify({"error": str(e)}), 500
 
-# B. GET EVENTS (The "Memory" - Fixed for App)
+# B. GET EVENTS (The "Memory")
 @app.route('/api/events', methods=['GET'])
 def get_events():
     try:
         events = []
-        # Fetch all events, newest first
         for doc in db.events.find().sort('_id', -1):
-            doc['_id'] = str(doc['_id']) # Convert ObjectId to String safely
+            doc['_id'] = str(doc['_id']) 
             events.append(doc)
         return jsonify(events), 200
     except Exception as e:
@@ -89,9 +93,7 @@ def get_events():
 @app.route('/api/events/<event_id>', methods=['DELETE'])
 def delete_event(event_id):
     try:
-        # Delete using the ObjectId
         result = db.events.delete_one({'_id': ObjectId(event_id)})
-        
         if result.deleted_count > 0:
             return jsonify({"message": "Deleted"}), 200
         else:
