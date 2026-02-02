@@ -1,3 +1,4 @@
+from datetime import datetime
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from pymongo import MongoClient
@@ -175,6 +176,32 @@ def update_event(event_id):
             {'$set': update_data}
         )
         return jsonify({"message": "Event Updated Successfully"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
+    # G. ADD COMMENT (The "Vibe Check")
+@app.route('/api/events/<event_id>/comment', methods=['POST'])
+def add_comment(event_id):
+    try:
+        data = request.json
+        # Create a simple comment object
+        comment = {
+            "id": os.urandom(4).hex(),
+            "user": data.get("user", "Anonymous"), # We will send the user's email
+            "text": data.get("text", ""),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        if not comment["text"]:
+            return jsonify({"error": "Comment cannot be empty"}), 400
+
+        # Push into the 'comments' array of the event
+        db.events.update_one(
+            {'_id': ObjectId(event_id)}, 
+            {'$push': {'comments': comment}}
+        )
+        
+        return jsonify(comment), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
