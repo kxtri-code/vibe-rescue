@@ -29,14 +29,12 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # --- SMART MODEL SELECTOR ---
 def generate_event_details(file_path):
-    # List of models to try, from newest to oldest
-    # Since it's 2026, we prioritize 2.0!
+    # We try your suggestion first, then standard backups
     possible_models = [
-        "gemini-2.0-flash", 
-        "gemini-1.5-flash", 
-        "gemini-1.5-pro", 
-        "gemini-1.5-flash-001",
-        "gemini-pro-vision"
+        "gemini-1.5-flash",       # Standard rolling version (Safest)
+        "gemini-flash-latest",    # Your suggestion (Alias)
+        "gemini-1.5-pro",         # Higher intelligence fallback
+        "gemini-pro"              # Old reliable
     ]
     
     myfile = genai.upload_file(file_path)
@@ -52,11 +50,13 @@ def generate_event_details(file_path):
             print(f"✅ Success with {model_name}!")
             return result.text
         except Exception as e:
-            print(f"❌ Failed with {model_name}: {e}")
+            # If 404 (Not Found), we just try the next one
+            print(f"⚠️ Failed with {model_name}: {e}")
             last_error = e
-            continue # Try the next one
+            continue 
     
-    raise last_error # If all fail, crash with the last error
+    # If we get here, ALL models failed
+    raise last_error
 
 # --- ROUTES ---
 
@@ -75,11 +75,15 @@ def scan_flyer():
         filepath = os.path.join(UPLOAD_FOLDER, filename)
         file.save(filepath)
 
-        # Use the Smart Selector
+        # AI PROCESSING
         ai_text = generate_event_details(filepath)
         
         # Clean AI response
         clean_text = ai_text.replace('```json', '').replace('```', '')
+        # Handle cases where AI adds extra text
+        if "{" in clean_text:
+            clean_text = clean_text[clean_text.find("{"):clean_text.rfind("}")+1]
+            
         data = json.loads(clean_text)
         
         # Add image URL and Save
