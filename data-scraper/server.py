@@ -164,6 +164,19 @@ def update_event(event_id):
         return jsonify({"message": "Updated"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    
+    # H. DELETE COMMENT (Moderation)
+@app.route('/api/events/<event_id>/comment/<comment_id>', methods=['DELETE'])
+def delete_comment(event_id, comment_id):
+    try:
+        # Remove the comment with the matching 'id' from the list
+        db.events.update_one(
+            {'_id': ObjectId(event_id)}, 
+            {'$pull': {'comments': {'id': comment_id}}}
+        )
+        return jsonify({"message": "Comment deleted"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # SERVE IMAGES
 @app.route('/uploads/<path:filename>')
