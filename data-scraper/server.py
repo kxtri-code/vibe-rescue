@@ -154,6 +154,29 @@ def toggle_like(event_id):
         return jsonify({"message": "Updated", "liked": new_status}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    
+    # F. EDIT EVENT DETAILS (Fixing AI Mistakes)
+@app.route('/api/events/<event_id>', methods=['PUT'])
+def update_event(event_id):
+    try:
+        data = request.json
+        # We only allow updating these specific text fields
+        allowed_keys = ['event_name', 'venue', 'date', 'time']
+        
+        # Create a clean update object
+        update_data = {k: v for k, v in data.items() if k in allowed_keys}
+        
+        if not update_data:
+             return jsonify({"error": "No valid fields to update"}), 400
+
+        # Update the database
+        db.events.update_one(
+            {'_id': ObjectId(event_id)}, 
+            {'$set': update_data}
+        )
+        return jsonify({"message": "Event Updated Successfully"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/uploads/<path:filename>')
 def serve_image(filename):
