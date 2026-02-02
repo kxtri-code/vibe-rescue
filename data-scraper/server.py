@@ -131,6 +131,29 @@ def delete_event(event_id):
         return jsonify({"message": "Deleted"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    
+    # E. TOGGLE LIKE (The "Heart" Update)
+@app.route('/api/events/<event_id>/like', methods=['PUT'])
+def toggle_like(event_id):
+    try:
+        # 1. Find the event
+        event = db.events.find_one({'_id': ObjectId(event_id)})
+        if not event:
+            return jsonify({"error": "Event not found"}), 404
+            
+        # 2. Flip the 'liked' status (True -> False, or False -> True)
+        current_status = event.get('liked', False)
+        new_status = not current_status
+        
+        # 3. Save to DB
+        db.events.update_one(
+            {'_id': ObjectId(event_id)}, 
+            {'$set': {'liked': new_status}}
+        )
+        
+        return jsonify({"message": "Updated", "liked": new_status}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/uploads/<path:filename>')
 def serve_image(filename):
