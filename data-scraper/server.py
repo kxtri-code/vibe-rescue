@@ -85,7 +85,6 @@ def scan_flyer():
         try:
             data = json.loads(clean_text)
         except:
-            # Fallback JSON extraction
             start = clean_text.find('{')
             end = clean_text.rfind('}') + 1
             data = json.loads(clean_text[start:end])
@@ -93,7 +92,8 @@ def scan_flyer():
         # Add Metadata
         data['image_url'] = f"/uploads/{filename}"
         data['created_by'] = user_email
-        data['likes'] = [] # Initialize empty likes list
+        data['likes'] = [] 
+        data['checkins'] = [] # New Check-in list
         
         # Look up creator's avatar to stamp on the event
         user_doc = db.users.find_one({"email": user_email})
@@ -115,8 +115,8 @@ def get_events():
         events = []
         for doc in db.events.find().sort('_id', -1):
             doc['_id'] = str(doc['_id']) 
-            # Ensure 'likes' is always a list for the frontend
             if 'likes' not in doc: doc['likes'] = []
+            if 'checkins' not in doc: doc['checkins'] = [] # Ensure list exists
             events.append(doc)
         return jsonify(events), 200
     except Exception as e:
@@ -145,11 +145,9 @@ def toggle_like(event_id):
         current_likes = event.get('likes', [])
         
         if user_email in current_likes:
-            # Unlike
             db.events.update_one({'_id': ObjectId(event_id)}, {'$pull': {'likes': user_email}})
             action = "unliked"
         else:
-            # Like
             db.events.update_one({'_id': ObjectId(event_id)}, {'$addToSet': {'likes': user_email}})
             action = "liked"
             
@@ -165,8 +163,7 @@ def update_event(event_id):
         allowed = ['event_name', 'venue', 'date', 'time', 'ticket_link']
         update_data = {k: v for k, v in data.items() if k in allowed}
         
-        if not update_data:
-             return jsonify({"error": "No valid fields"}), 400
+        if not update_data: return jsonify({"error": "No valid fields"}), 400
 
         db.events.update_one({'_id': ObjectId(event_id)}, {'$set': update_data})
         return jsonify({"message": "Updated"}), 200
@@ -178,7 +175,6 @@ def update_event(event_id):
 def add_comment(event_id):
     try:
         data = request.json
-        # Fetch user avatar to store with comment
         user_doc = db.users.find_one({"email": data.get("user")})
         avatar = user_doc.get('avatar_url') if user_doc else None
 
@@ -201,10 +197,7 @@ def add_comment(event_id):
 @app.route('/api/events/<event_id>/comment/<comment_id>', methods=['DELETE'])
 def delete_comment(event_id, comment_id):
     try:
-        db.events.update_one(
-            {'_id': ObjectId(event_id)}, 
-            {'$pull': {'comments': {'id': comment_id}}}
-        )
+        db.events.update_one({'_id': ObjectId(event_id)}, {'$pull': {'comments': {'id': comment_id}}})
         return jsonify({"message": "Comment deleted"}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -223,7 +216,6 @@ def upload_avatar():
         
         avatar_url = f"/profiles/{filename}"
         
-        # Save User to DB
         db.users.update_one(
             {"email": email},
             {"$set": {"avatar_url": avatar_url, "email": email}},
@@ -240,6 +232,23 @@ def get_user(email):
         if user: return jsonify({"avatar_url": user.get("avatar_url")}), 200
         return jsonify({"avatar_url": None}), 404
     except Exception as e: return jsonify({"error": str(e)}), 500
+
+# K. LIVE CHECK-IN (I'm Here!)
+@app.route('/api/events/<event_id>/checkin', methods=['POST'])
+def check_in(event_id):
+    try:
+        data = request.json
+        user_email = data.get('user')
+        # We receive location, but currently just store the user count
+        if not user_email: return jsonify({"error": "User required"}), 400
+
+        db.events.update_one(
+            {'_id': ObjectId(event_id)}, 
+            {'$addToSet': {'checkins': user_email}}
+        )
+        return jsonify({"message": "Checked in"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # J. SERVE IMAGES
 @app.route('/uploads/<path:filename>')
