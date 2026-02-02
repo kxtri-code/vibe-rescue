@@ -150,10 +150,20 @@ def toggle_like(event_id):
 
 @app.route('/api/events/<event_id>', methods=['PUT'])
 def update_event(event_id):
-    data = request.json
-    allowed = ['event_name', 'venue', 'date', 'time']
-    db.events.update_one({'_id': ObjectId(event_id)}, {'$set': {k: v for k, v in data.items() if k in allowed}})
-    return jsonify({"message": "Updated"}), 200
+    try:
+        data = request.json
+        # 🎟️ ADDED 'ticket_link' to allowed fields
+        allowed = ['event_name', 'venue', 'date', 'time', 'ticket_link']
+        
+        update_data = {k: v for k, v in data.items() if k in allowed}
+        
+        if not update_data:
+             return jsonify({"error": "No valid fields to update"}), 400
+
+        db.events.update_one({'_id': ObjectId(event_id)}, {'$set': update_data})
+        return jsonify({"message": "Updated"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # SERVE IMAGES
 @app.route('/uploads/<path:filename>')
