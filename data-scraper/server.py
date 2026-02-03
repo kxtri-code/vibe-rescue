@@ -17,17 +17,14 @@ CORS(app)
 
 # 2. DATABASE
 MONGO_URI = os.getenv("MONGO_URI")
-if not MONGO_URI:
-    print("⚠️ WARNING: MONGO_URI is missing!")
+if not MONGO_URI: print("⚠️ WARNING: MONGO_URI is missing!")
 client = MongoClient(MONGO_URI)
 db = client.get_database('project_vibe') 
 
-# 3. AI CONFIG (Just configure, do NOT call API yet)
+# 3. AI CONFIG
 GENAI_API_KEY = os.getenv("GENAI_API_KEY")
-if not GENAI_API_KEY:
-    print("⚠️ CRITICAL: GENAI_API_KEY is missing!")
-else:
-    genai.configure(api_key=GENAI_API_KEY)
+if not GENAI_API_KEY: print("⚠️ CRITICAL: GENAI_API_KEY is missing!")
+else: genai.configure(api_key=GENAI_API_KEY)
 
 # 4. FOLDERS
 UPLOAD_FOLDER = 'uploads'
@@ -35,39 +32,26 @@ PROFILE_FOLDER = 'profiles'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PROFILE_FOLDER, exist_ok=True)
 
-# --- HELPER: SAFE MODEL SELECTOR ---
+# --- HELPER: AUTO-DETECT MODEL ---
 def get_best_model():
-    """Only runs when needed to avoid startup crashes."""
-    try:
-        # Hardcoded priority list to avoid API calls if possible
-        return 'models/gemini-1.5-flash'
-    except:
-        return 'gemini-pro'
+    return 'models/gemini-1.5-flash' 
 
 def generate_event_details(file_path):
-    # Using specific model to prevent 404s
-    model_name = "models/gemini-1.5-flash" 
-    
+    active_model = get_best_model()
     try:
         myfile = genai.upload_file(file_path)
         prompt = "Analyze this flyer. Extract details into JSON. Keys: event_name, venue, date (YYYY-MM-DD), time, vibe (Array of 3 strings). Do not use markdown."
-        
-        model = genai.GenerativeModel(model_name)
+        model = genai.GenerativeModel(active_model)
         result = model.generate_content([myfile, prompt])
         return result.text
     except Exception as e:
-        # Fallback to older model if flash fails
-        print(f"Primary model failed: {e}. Trying fallback.")
-        model = genai.GenerativeModel("gemini-pro")
-        result = model.generate_content([myfile, prompt])
-        return result.text
+        print(f"AI Error: {e}")
+        return "{}"
 
 # --- ROUTES ---
 
 @app.route('/')
-def home():
-    # Health check - must return 200 OK fast!
-    return "Project Vibe is Online! 🟢", 200
+def home(): return "Project Vibe is Online! 🟢", 200
 
 # A. SCANNER
 @app.route('/api/scan', methods=['POST'])
@@ -76,7 +60,6 @@ def scan_flyer():
         if 'photo' not in request.files: return jsonify({"error": "No photo"}), 400
         file = request.files['photo']
         user_email = request.form.get('user_email', 'Anonymous')
-        
         filename = f"{os.urandom(4).hex()}_{file.filename}"
         filepath = os.path.join(UPLOAD_FOLDER, filename)
         file.save(filepath)
@@ -84,7 +67,10 @@ def scan_flyer():
         ai_text = generate_event_details(filepath)
         clean_text = re.sub(r'```json\s*|\s*```', '', ai_text).strip()
         try: data = json.loads(clean_text)
-        except: data = json.loads(clean_text[clean_text.find('{'):clean_text.rfind('}')+1])
+        except: 
+            # Fallback regex if JSON is messy
+            try: data = json.loads(clean_text[clean_text.find('{'):clean_text.rfind('}')+1])
+            except: return jsonify({"error": "AI could not read flyer"}), 500
 
         data['image_url'] = f"/uploads/{filename}"
         data['created_by'] = user_email
@@ -125,7 +111,7 @@ def claim_ticket():
             "date": data.get('date'),
             "user_email": data.get('user_email'),
             "timestamp": datetime.now().isoformat(),
-            "status": "valid"
+            "status": "valid" # 'valid' or 'used'
         }
         existing = db.tickets.find_one({"event_id": data.get('event_id'), "user_email": data.get('user_email')})
         if existing: return jsonify({"message": "You already have a pass!", "ticket": existing['ticket_id']}), 200
@@ -141,6 +127,40 @@ def get_my_tickets(email):
         return jsonify(tickets), 200
     except Exception as e: return jsonify({"error": str(e)}), 500
 
+# N. 🕵️ BOUNCER: VERIFY TICKET (NEW)
+@app.route('/api/tickets/verify', methods=['POST'])
+def verify_ticket():
+    try:
+        data = request.json
+        ticket_id = data.get('ticket_id')
+        
+        ticket = db.tickets.find_one({"ticket_id": ticket_id})
+        
+        if not ticket:
+            return jsonify({"valid": False, "message": "❌ Invalid Ticket ID"}), 404
+            
+        if ticket.get('status') == 'used':
+            return jsonify({
+                "valid": False, 
+                "message": f"⚠️ ALREADY USED!\nScanned at {ticket.get('used_at', 'unknown time')}",
+                "user": ticket.get('user_email')
+            }), 200
+            
+        # Mark as used
+        db.tickets.update_one(
+            {"ticket_id": ticket_id},
+            {"$set": {"status": "used", "used_at": datetime.now().strftime("%H:%M")}}
+        )
+        
+        return jsonify({
+            "valid": True, 
+            "message": "✅ VALID PASS",
+            "event": ticket.get('event_name'),
+            "user": ticket.get('user_email')
+        }), 200
+
+    except Exception as e: return jsonify({"error": str(e)}), 500
+
 # L. AI CONCIERGE
 @app.route('/api/ask-ai', methods=['POST'])
 def ask_ai():
@@ -149,13 +169,11 @@ def ask_ai():
         query = data.get('query')
         events = list(db.events.find())
         context = "Events:\n" + "\n".join([f"- {e.get('event_name')} @ {e.get('venue')} ({e.get('vibe')})" for e in events])
-        
         prompt = f"Role: VibeAI Concierge.\nData: {context}\nUser: {query}\nTask: Recommend best event. Be short & hype."
-        
         model = genai.GenerativeModel("models/gemini-1.5-flash")
         response = model.generate_content(prompt)
         return jsonify({"reply": response.text}), 200
-    except Exception as e: return jsonify({"reply": f"My brain is tired (Quota Exceeded). Try again in a minute!"}), 200
+    except Exception as e: return jsonify({"reply": f"Quota limit reached. Try later."}), 200
 
 # STANDARD ROUTES
 @app.route('/api/events/<event_id>', methods=['DELETE'])
