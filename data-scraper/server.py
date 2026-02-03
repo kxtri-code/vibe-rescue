@@ -33,7 +33,7 @@ os.makedirs(PROFILE_FOLDER, exist_ok=True)
 
 # --- HELPER: GENERATE DETAILS ---
 def generate_event_details(file_path):
-    # ✅ FIX: Use ONLY the stable 'gemini-1.5-flash' model
+    # ✅ STRICTLY USING GEMINI 1.5 FLASH
     try:
         print("🤖 Analyzing flyer with gemini-1.5-flash...")
         myfile = genai.upload_file(file_path)
@@ -118,7 +118,7 @@ def ask_ai():
         - Be short, hype, and use emojis.
         """
         
-        # ✅ FIX: Use ONLY 'gemini-1.5-flash'
+        # ✅ STRICTLY USING GEMINI 1.5 FLASH
         model = genai.GenerativeModel("gemini-1.5-flash")
         response = model.generate_content(prompt)
         
