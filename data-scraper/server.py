@@ -33,10 +33,11 @@ os.makedirs(PROFILE_FOLDER, exist_ok=True)
 
 # --- HELPER: GENERATE DETAILS ---
 def generate_event_details(file_path):
-    # Try multiple models in case one is deprecated/unavailable
-    possible_models = ["gemini-1.5-flash", "gemini-pro", "gemini-1.5-pro-latest"]
+    # ✅ FIX: Use only stable, valid model names
+    possible_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
+    
     myfile = genai.upload_file(file_path)
-    prompt = "Analyze this flyer. Extract details into JSON. Keys: event_name, venue, date (YYYY-MM-DD), time, vibe (Array of 3 strings)."
+    prompt = "Analyze this flyer. Extract details into JSON. Keys: event_name, venue, date (YYYY-MM-DD), time, vibe (Array of 3 strings). Do not use markdown."
     
     last_error = None
     for model_name in possible_models:
@@ -83,7 +84,7 @@ def scan_flyer():
         new_id = db.events.insert_one(data).inserted_id
         data['_id'] = str(new_id)
         return jsonify(data), 200
-    except Exception as e: return jsonify({"error": str(e)}), 500
+    except Exception as e: return jsonify({"error": f"Scan Failed: {str(e)}"}), 500
 
 # B. GET EVENTS
 @app.route('/api/events', methods=['GET'])
@@ -130,8 +131,8 @@ def ask_ai():
         - Do NOT say "I cannot find". Pick something!
         """
         
-        # 3. Use standard model
-        model = genai.GenerativeModel("gemini-pro")
+        # 3. ✅ FIX: Use 'gemini-1.5-flash' (Fast & Stable)
+        model = genai.GenerativeModel("gemini-1.5-flash")
         response = model.generate_content(prompt)
         
         if not response.text:
