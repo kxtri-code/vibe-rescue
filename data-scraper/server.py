@@ -20,25 +20,12 @@ if not MONGO_URI: print("⚠️ WARNING: MONGO_URI is missing!")
 client = MongoClient(MONGO_URI)
 db = client.get_database('project_vibe') 
 
-# 3. AI CONFIG & DIAGNOSTICS
+# 3. AI CONFIG
 GENAI_API_KEY = os.getenv("GENAI_API_KEY")
 if not GENAI_API_KEY: 
     print("⚠️ CRITICAL: GENAI_API_KEY is missing!")
 else: 
     genai.configure(api_key=GENAI_API_KEY)
-    
-    # --- DIAGNOSTIC: PRINT AVAILABLE MODELS ---
-    print("\n🔍 --- DIAGNOSTIC START ---")
-    try:
-        print(f"📚 Library Version: {genai.__version__}")
-        print("🤖 Listing Available Models...")
-        for m in genai.list_models():
-            print(f"   - {m.name}")
-            if 'generateContent' in m.supported_generation_methods:
-                print(f"     (Supports generateContent)")
-    except Exception as e:
-        print(f"❌ Diagnostic Failed: {e}")
-    print("🔍 --- DIAGNOSTIC END ---\n")
 
 # 4. FOLDERS
 UPLOAD_FOLDER = 'uploads'
@@ -48,35 +35,47 @@ os.makedirs(PROFILE_FOLDER, exist_ok=True)
 
 # --- HELPER: AUTO-DETECT MODEL ---
 def get_best_model():
-    """Finds the best available model from the diagnostic list."""
+    """Finds the best available model based on your specific logs."""
     try:
-        # Get all models that support 'generateContent'
-        models = [m for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        model_names = [m.name for m in models]
-        
-        # Priority List (Newest to Oldest)
+        # We explicitly look for the models found in your logs
+        # Priority: 2.0 Flash -> Flash Latest -> 2.5 Flash
         priorities = [
-            'models/gemini-1.5-flash',
-            'models/gemini-1.5-pro',
-            'models/gemini-1.5-pro-latest',
-            'models/gemini-pro',
-            'gemini-1.5-flash',
-            'gemini-pro'
+            'models/gemini-2.0-flash',
+            'models/gemini-flash-latest',
+            'models/gemini-2.5-flash',
+            'models/gemini-2.0-flash-lite'
         ]
         
+        # Get list from Google
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
         for p in priorities:
-            if p in model_names:
+            if p in available_models:
                 print(f"✅ Selected Model: {p}")
                 return p
         
-        # Fallback to the first available one
-        if model_names:
-            print(f"⚠️ Fallback Model: {model_names[0]}")
-            return model_names[0]
-            
-        return 'gemini-pro' # Hail Mary
-    except:
-        return 'gemini-pro'
+        # Fallback: Just take the first one that has 'flash' in it
+        for m in available_models:
+            if 'flash' in m:
+                print(f"⚠️ Fallback Flash Model: {m}")
+                return m
+                
+        return available_models[0] # Absolute fallback
+    except Exception as e:
+        print(f"❌ Model Selection Error: {e}")
+        return 'models/gemini-2.0-flash' # Hardcoded hope
+
+# --- HELPER: GENERATE DETAILS ---
+def generate_event_details(file_path):
+    active_model = get_best_model()
+    print(f"🤖 Scanning with: {active_model}")
+    
+    myfile = genai.upload_file(file_path)
+    prompt = "Analyze this flyer. Extract details into JSON. Keys: event_name, venue, date (YYYY-MM-DD), time, vibe (Array of 3 strings). Do not use markdown."
+    
+    model = genai.GenerativeModel(active_model)
+    result = model.generate_content([myfile, prompt])
+    return result.text
 
 # --- ROUTES ---
 
@@ -95,14 +94,9 @@ def scan_flyer():
         file.save(filepath)
 
         # AI PROCESSING
-        active_model = get_best_model()
-        print(f"🚀 Scanning with: {active_model}")
+        ai_text = generate_event_details(filepath)
         
-        myfile = genai.upload_file(filepath)
-        model = genai.GenerativeModel(active_model)
-        result = model.generate_content([myfile, "Analyze this flyer. JSON Keys: event_name, venue, date (YYYY-MM-DD), time, vibe (Array of 3 strings). No markdown."])
-        
-        clean_text = re.sub(r'```json\s*|\s*```', '', result.text).strip()
+        clean_text = re.sub(r'```json\s*|\s*```', '', ai_text).strip()
         try: data = json.loads(clean_text)
         except: data = json.loads(clean_text[clean_text.find('{'):clean_text.rfind('}')+1])
 
@@ -159,7 +153,7 @@ def ask_ai():
         print(f"❌ CHAT ERROR: {e}")
         return jsonify({"reply": f"Error: {str(e)}"}), 200
 
-# STANDARD ROUTES (Delete, Like, Update, Checkin, Profile...)
+# STANDARD ROUTES
 @app.route('/api/events/<event_id>', methods=['DELETE'])
 def delete_event(event_id):
     db.events.delete_one({'_id': ObjectId(event_id)})
