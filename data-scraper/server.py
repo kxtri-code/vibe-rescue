@@ -33,24 +33,19 @@ os.makedirs(PROFILE_FOLDER, exist_ok=True)
 
 # --- HELPER: GENERATE DETAILS ---
 def generate_event_details(file_path):
-    # ✅ FIX: Use only stable, valid model names
-    possible_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
-    
-    myfile = genai.upload_file(file_path)
-    prompt = "Analyze this flyer. Extract details into JSON. Keys: event_name, venue, date (YYYY-MM-DD), time, vibe (Array of 3 strings). Do not use markdown."
-    
-    last_error = None
-    for model_name in possible_models:
-        try:
-            print(f"Trying model: {model_name}")
-            model = genai.GenerativeModel(model_name)
-            result = model.generate_content([myfile, prompt])
-            return result.text
-        except Exception as e:
-            print(f"Model {model_name} failed: {e}")
-            last_error = e
-            continue
-    raise last_error
+    # ✅ FIX: Use ONLY the stable 'gemini-1.5-flash' model
+    try:
+        print("🤖 Analyzing flyer with gemini-1.5-flash...")
+        myfile = genai.upload_file(file_path)
+        
+        prompt = "Analyze this flyer. Extract details into JSON. Keys: event_name, venue, date (YYYY-MM-DD), time, vibe (Array of 3 strings). Do not use markdown."
+        
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        result = model.generate_content([myfile, prompt])
+        return result.text
+    except Exception as e:
+        print(f"❌ AI Scan Failed: {e}")
+        raise e
 
 # --- ROUTES ---
 
@@ -69,7 +64,6 @@ def scan_flyer():
         file.save(filepath)
 
         ai_text = generate_event_details(filepath)
-        # Clean potential markdown
         clean_text = re.sub(r'```json\s*|\s*```', '', ai_text).strip()
         try: data = json.loads(clean_text)
         except: data = json.loads(clean_text[clean_text.find('{'):clean_text.rfind('}')+1])
@@ -99,24 +93,19 @@ def get_events():
         return jsonify(events), 200
     except Exception as e: return jsonify({"error": str(e)}), 500
 
-# L. 🤖 VIBE AI CONCIERGE (FIXED)
+# L. 🤖 VIBE AI CONCIERGE
 @app.route('/api/ask-ai', methods=['POST'])
 def ask_ai():
     try:
         data = request.json
         query = data.get('query')
-        print(f"🤖 AI Query Received: {query}")
+        print(f"🤖 AI Query: {query}")
         
-        # 1. Fetch Events Context
         events = list(db.events.find())
-        if not events:
-            return jsonify({"reply": "There are no events in the database yet! Upload one first."}), 200
-
         context = "Here is the database of current events:\n"
         for e in events:
             context += f"- EVENT: {e.get('event_name')} | VENUE: {e.get('venue')} | DATE: {e.get('date')} | VIBE: {e.get('vibe')}\n"
         
-        # 2. Stronger Prompt
         prompt = f"""
         You are VibeAI, a cool nightlife assistant.
         User asks: "{query}"
@@ -126,25 +115,20 @@ def ask_ai():
         
         INSTRUCTIONS:
         - Recommend the BEST matching event from the database.
-        - If nothing matches perfectly, suggest the coolest alternative.
         - Be short, hype, and use emojis.
-        - Do NOT say "I cannot find". Pick something!
         """
         
-        # 3. ✅ FIX: Use 'gemini-1.5-flash' (Fast & Stable)
+        # ✅ FIX: Use ONLY 'gemini-1.5-flash'
         model = genai.GenerativeModel("gemini-1.5-flash")
         response = model.generate_content(prompt)
         
-        if not response.text:
-            return jsonify({"reply": "I'm having trouble reading the vibes right now. Try again!"}), 200
-            
         return jsonify({"reply": response.text}), 200
 
     except Exception as e:
-        print(f"❌ AI ERROR: {str(e)}")
+        print(f"❌ AI Chat Error: {str(e)}")
         return jsonify({"reply": f"My brain fried. Error: {str(e)}"}), 200
 
-# STANDARD ROUTES (Delete, Like, Update, etc.)
+# STANDARD ROUTES
 @app.route('/api/events/<event_id>', methods=['DELETE'])
 def delete_event(event_id):
     db.events.delete_one({'_id': ObjectId(event_id)})
@@ -202,7 +186,7 @@ def check_in(event_id):
     db.events.update_one({'_id': ObjectId(event_id)}, {'$addToSet': {'checkins': data.get('user')}})
     return jsonify({"message": "Checked in"}), 200
 
-# SERVE IMAGES
+# SERVE
 @app.route('/uploads/<path:filename>')
 def serve_uploads(filename): return send_from_directory(UPLOAD_FOLDER, filename)
 @app.route('/profiles/<path:filename>')
