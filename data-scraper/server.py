@@ -14,44 +14,41 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-# 2. DATABASE CONNECTION
+# 2. DATABASE
 MONGO_URI = os.getenv("MONGO_URI")
-if not MONGO_URI:
-    print("⚠️ WARNING: MONGO_URI is missing!")
+if not MONGO_URI: print("⚠️ WARNING: MONGO_URI is missing!")
 client = MongoClient(MONGO_URI)
 db = client.get_database('project_vibe') 
 
-# 3. AI CONFIGURATION
+# 3. AI CONFIG
 GENAI_API_KEY = os.getenv("GENAI_API_KEY")
-if not GENAI_API_KEY:
-    print("⚠️ CRITICAL: GENAI_API_KEY is missing!")
-else:
-    genai.configure(api_key=GENAI_API_KEY)
+if not GENAI_API_KEY: print("⚠️ CRITICAL: GENAI_API_KEY is missing!")
+else: genai.configure(api_key=GENAI_API_KEY)
 
-# 4. UPLOAD FOLDERS
+# 4. FOLDERS
 UPLOAD_FOLDER = 'uploads'
 PROFILE_FOLDER = 'profiles'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PROFILE_FOLDER, exist_ok=True)
 
-# --- SMART MODEL SELECTOR ---
+# --- HELPER: GENERATE DETAILS ---
 def generate_event_details(file_path):
-    possible_models = ["gemini-flash-latest", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
+    # Try multiple models in case one is deprecated/unavailable
+    possible_models = ["gemini-1.5-flash", "gemini-pro", "gemini-1.5-pro-latest"]
     myfile = genai.upload_file(file_path)
-    prompt = """
-    Analyze this flyer. Extract details into JSON.
-    Keys: "event_name", "venue", "date" (YYYY-MM-DD), "time", "vibe" (Array of 3 strings).
-    Do not use markdown.
-    """
+    prompt = "Analyze this flyer. Extract details into JSON. Keys: event_name, venue, date (YYYY-MM-DD), time, vibe (Array of 3 strings)."
+    
     last_error = None
     for model_name in possible_models:
         try:
+            print(f"Trying model: {model_name}")
             model = genai.GenerativeModel(model_name)
             result = model.generate_content([myfile, prompt])
             return result.text
         except Exception as e:
+            print(f"Model {model_name} failed: {e}")
             last_error = e
-            continue 
+            continue
     raise last_error
 
 # --- ROUTES ---
@@ -71,6 +68,7 @@ def scan_flyer():
         file.save(filepath)
 
         ai_text = generate_event_details(filepath)
+        # Clean potential markdown
         clean_text = re.sub(r'```json\s*|\s*```', '', ai_text).strip()
         try: data = json.loads(clean_text)
         except: data = json.loads(clean_text[clean_text.find('{'):clean_text.rfind('}')+1])
@@ -79,7 +77,6 @@ def scan_flyer():
         data['created_by'] = user_email
         data['likes'] = [] 
         data['checkins'] = []
-        
         user_doc = db.users.find_one({"email": user_email})
         if user_doc: data['creator_avatar'] = user_doc.get('avatar_url')
 
@@ -101,42 +98,52 @@ def get_events():
         return jsonify(events), 200
     except Exception as e: return jsonify({"error": str(e)}), 500
 
-# L. 🤖 VIBE AI CONCIERGE (NEW)
+# L. 🤖 VIBE AI CONCIERGE (FIXED)
 @app.route('/api/ask-ai', methods=['POST'])
 def ask_ai():
     try:
         data = request.json
         query = data.get('query')
+        print(f"🤖 AI Query Received: {query}")
         
-        # 1. Fetch Summary of Events
-        events = db.events.find()
-        context = "Here are the current events:\n"
+        # 1. Fetch Events Context
+        events = list(db.events.find())
+        if not events:
+            return jsonify({"reply": "There are no events in the database yet! Upload one first."}), 200
+
+        context = "Here is the database of current events:\n"
         for e in events:
-            context += f"- {e.get('event_name')} at {e.get('venue')}. Date: {e.get('date')}. Vibe: {e.get('vibe')}. \n"
+            context += f"- EVENT: {e.get('event_name')} | VENUE: {e.get('venue')} | DATE: {e.get('date')} | VIBE: {e.get('vibe')}\n"
         
-        today = datetime.now().strftime("%Y-%m-%d")
-        
-        # 2. Prompt Engineering
+        # 2. Stronger Prompt
         prompt = f"""
-        Act as a cool, high-energy nightlife concierge for the app 'Project Vibe'.
-        Today is {today}.
+        You are VibeAI, a cool nightlife assistant.
+        User asks: "{query}"
         
+        Database:
         {context}
         
-        User Question: "{query}"
-        
-        Recommend the best event from the list above. Be short, punchy, and use emojis. 
-        If nothing fits perfectly, suggest the next best thing.
+        INSTRUCTIONS:
+        - Recommend the BEST matching event from the database.
+        - If nothing matches perfectly, suggest the coolest alternative.
+        - Be short, hype, and use emojis.
+        - Do NOT say "I cannot find". Pick something!
         """
         
-        # 3. Generate Answer
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        # 3. Use standard model
+        model = genai.GenerativeModel("gemini-pro")
         response = model.generate_content(prompt)
+        
+        if not response.text:
+            return jsonify({"reply": "I'm having trouble reading the vibes right now. Try again!"}), 200
+            
         return jsonify({"reply": response.text}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
-# STANDARD ROUTES
+    except Exception as e:
+        print(f"❌ AI ERROR: {str(e)}")
+        return jsonify({"reply": f"My brain fried. Error: {str(e)}"}), 200
+
+# STANDARD ROUTES (Delete, Like, Update, etc.)
 @app.route('/api/events/<event_id>', methods=['DELETE'])
 def delete_event(event_id):
     db.events.delete_one({'_id': ObjectId(event_id)})
@@ -147,10 +154,8 @@ def toggle_like(event_id):
     data = request.json
     user = data.get('user_email')
     event = db.events.find_one({'_id': ObjectId(event_id)})
-    if user in event.get('likes', []):
-        db.events.update_one({'_id': ObjectId(event_id)}, {'$pull': {'likes': user}})
-    else:
-        db.events.update_one({'_id': ObjectId(event_id)}, {'$addToSet': {'likes': user}})
+    if user in event.get('likes', []): db.events.update_one({'_id': ObjectId(event_id)}, {'$pull': {'likes': user}})
+    else: db.events.update_one({'_id': ObjectId(event_id)}, {'$addToSet': {'likes': user}})
     return jsonify({"message": "Updated"}), 200
 
 @app.route('/api/events/<event_id>', methods=['PUT'])
@@ -196,7 +201,7 @@ def check_in(event_id):
     db.events.update_one({'_id': ObjectId(event_id)}, {'$addToSet': {'checkins': data.get('user')}})
     return jsonify({"message": "Checked in"}), 200
 
-# SERVE
+# SERVE IMAGES
 @app.route('/uploads/<path:filename>')
 def serve_uploads(filename): return send_from_directory(UPLOAD_FOLDER, filename)
 @app.route('/profiles/<path:filename>')
