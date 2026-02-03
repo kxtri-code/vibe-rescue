@@ -35,35 +35,29 @@ os.makedirs(PROFILE_FOLDER, exist_ok=True)
 
 # --- HELPER: AUTO-DETECT MODEL ---
 def get_best_model():
-    """Finds the best available model based on your specific logs."""
+    """Prioritizes the production alias for better stability."""
     try:
-        # We explicitly look for the models found in your logs
-        # Priority: 2.0 Flash -> Flash Latest -> 2.5 Flash
-        priorities = [
-            'models/gemini-2.0-flash',
-            'models/gemini-flash-latest',
-            'models/gemini-2.5-flash',
-            'models/gemini-2.0-flash-lite'
-        ]
-        
-        # Get list from Google
+        # Get list from Google to be safe
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # ✅ NEW STRATEGY: Use the "Latest" alias. It is the most stable.
+        priorities = [
+            'models/gemini-flash-latest',   # Best for Production Apps
+            'models/gemini-1.5-flash',      # Backup Standard
+            'models/gemini-2.0-flash',      # Experimental (Newest)
+            'models/gemini-pro'             # Old Reliable
+        ]
         
         for p in priorities:
             if p in available_models:
                 print(f"✅ Selected Model: {p}")
                 return p
         
-        # Fallback: Just take the first one that has 'flash' in it
-        for m in available_models:
-            if 'flash' in m:
-                print(f"⚠️ Fallback Flash Model: {m}")
-                return m
-                
-        return available_models[0] # Absolute fallback
+        # Fallback
+        return available_models[0]
     except Exception as e:
         print(f"❌ Model Selection Error: {e}")
-        return 'models/gemini-2.0-flash' # Hardcoded hope
+        return 'models/gemini-flash-latest' # Blind Trust
 
 # --- HELPER: GENERATE DETAILS ---
 def generate_event_details(file_path):
@@ -112,7 +106,8 @@ def scan_flyer():
         return jsonify(data), 200
     except Exception as e: 
         print(f"❌ SCAN ERROR: {e}")
-        return jsonify({"error": f"Scan Failed: {str(e)}"}), 500
+        # Send the actual error message so the app knows (e.g. Quota Exceeded)
+        return jsonify({"error": f"AI Error: {str(e)}"}), 500
 
 # B. GET EVENTS
 @app.route('/api/events', methods=['GET'])
@@ -142,16 +137,13 @@ def ask_ai():
         prompt = f"Role: VibeAI Concierge.\nData: {context}\nUser: {query}\nTask: Recommend best event. Be short & hype."
         
         active_model = get_best_model()
-        print(f"🤖 Chatting with: {active_model}")
-        
         model = genai.GenerativeModel(active_model)
         response = model.generate_content(prompt)
         
         return jsonify({"reply": response.text}), 200
 
     except Exception as e:
-        print(f"❌ CHAT ERROR: {e}")
-        return jsonify({"reply": f"Error: {str(e)}"}), 200
+        return jsonify({"reply": f"Brain freeze! 🧊 ({str(e)})"}), 200
 
 # STANDARD ROUTES
 @app.route('/api/events/<event_id>', methods=['DELETE'])
