@@ -20,10 +20,25 @@ if not MONGO_URI: print("⚠️ WARNING: MONGO_URI is missing!")
 client = MongoClient(MONGO_URI)
 db = client.get_database('project_vibe') 
 
-# 3. AI CONFIG
+# 3. AI CONFIG & DIAGNOSTICS
 GENAI_API_KEY = os.getenv("GENAI_API_KEY")
-if not GENAI_API_KEY: print("⚠️ CRITICAL: GENAI_API_KEY is missing!")
-else: genai.configure(api_key=GENAI_API_KEY)
+if not GENAI_API_KEY: 
+    print("⚠️ CRITICAL: GENAI_API_KEY is missing!")
+else: 
+    genai.configure(api_key=GENAI_API_KEY)
+    
+    # --- DIAGNOSTIC: PRINT AVAILABLE MODELS ---
+    print("\n🔍 --- DIAGNOSTIC START ---")
+    try:
+        print(f"📚 Library Version: {genai.__version__}")
+        print("🤖 Listing Available Models...")
+        for m in genai.list_models():
+            print(f"   - {m.name}")
+            if 'generateContent' in m.supported_generation_methods:
+                print(f"     (Supports generateContent)")
+    except Exception as e:
+        print(f"❌ Diagnostic Failed: {e}")
+    print("🔍 --- DIAGNOSTIC END ---\n")
 
 # 4. FOLDERS
 UPLOAD_FOLDER = 'uploads'
@@ -31,21 +46,37 @@ PROFILE_FOLDER = 'profiles'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PROFILE_FOLDER, exist_ok=True)
 
-# --- HELPER: GENERATE DETAILS ---
-def generate_event_details(file_path):
-    # ✅ STRICTLY USING GEMINI 1.5 FLASH
+# --- HELPER: AUTO-DETECT MODEL ---
+def get_best_model():
+    """Finds the best available model from the diagnostic list."""
     try:
-        print("🤖 Analyzing flyer with gemini-1.5-flash...")
-        myfile = genai.upload_file(file_path)
+        # Get all models that support 'generateContent'
+        models = [m for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        model_names = [m.name for m in models]
         
-        prompt = "Analyze this flyer. Extract details into JSON. Keys: event_name, venue, date (YYYY-MM-DD), time, vibe (Array of 3 strings). Do not use markdown."
+        # Priority List (Newest to Oldest)
+        priorities = [
+            'models/gemini-1.5-flash',
+            'models/gemini-1.5-pro',
+            'models/gemini-1.5-pro-latest',
+            'models/gemini-pro',
+            'gemini-1.5-flash',
+            'gemini-pro'
+        ]
         
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        result = model.generate_content([myfile, prompt])
-        return result.text
-    except Exception as e:
-        print(f"❌ AI Scan Failed: {e}")
-        raise e
+        for p in priorities:
+            if p in model_names:
+                print(f"✅ Selected Model: {p}")
+                return p
+        
+        # Fallback to the first available one
+        if model_names:
+            print(f"⚠️ Fallback Model: {model_names[0]}")
+            return model_names[0]
+            
+        return 'gemini-pro' # Hail Mary
+    except:
+        return 'gemini-pro'
 
 # --- ROUTES ---
 
@@ -63,8 +94,15 @@ def scan_flyer():
         filepath = os.path.join(UPLOAD_FOLDER, filename)
         file.save(filepath)
 
-        ai_text = generate_event_details(filepath)
-        clean_text = re.sub(r'```json\s*|\s*```', '', ai_text).strip()
+        # AI PROCESSING
+        active_model = get_best_model()
+        print(f"🚀 Scanning with: {active_model}")
+        
+        myfile = genai.upload_file(filepath)
+        model = genai.GenerativeModel(active_model)
+        result = model.generate_content([myfile, "Analyze this flyer. JSON Keys: event_name, venue, date (YYYY-MM-DD), time, vibe (Array of 3 strings). No markdown."])
+        
+        clean_text = re.sub(r'```json\s*|\s*```', '', result.text).strip()
         try: data = json.loads(clean_text)
         except: data = json.loads(clean_text[clean_text.find('{'):clean_text.rfind('}')+1])
 
@@ -78,7 +116,9 @@ def scan_flyer():
         new_id = db.events.insert_one(data).inserted_id
         data['_id'] = str(new_id)
         return jsonify(data), 200
-    except Exception as e: return jsonify({"error": f"Scan Failed: {str(e)}"}), 500
+    except Exception as e: 
+        print(f"❌ SCAN ERROR: {e}")
+        return jsonify({"error": f"Scan Failed: {str(e)}"}), 500
 
 # B. GET EVENTS
 @app.route('/api/events', methods=['GET'])
@@ -99,36 +139,27 @@ def ask_ai():
     try:
         data = request.json
         query = data.get('query')
-        print(f"🤖 AI Query: {query}")
         
         events = list(db.events.find())
-        context = "Here is the database of current events:\n"
+        context = "Events:\n"
         for e in events:
-            context += f"- EVENT: {e.get('event_name')} | VENUE: {e.get('venue')} | DATE: {e.get('date')} | VIBE: {e.get('vibe')}\n"
+            context += f"- {e.get('event_name')} @ {e.get('venue')} ({e.get('vibe')})\n"
         
-        prompt = f"""
-        You are VibeAI, a cool nightlife assistant.
-        User asks: "{query}"
+        prompt = f"Role: VibeAI Concierge.\nData: {context}\nUser: {query}\nTask: Recommend best event. Be short & hype."
         
-        Database:
-        {context}
+        active_model = get_best_model()
+        print(f"🤖 Chatting with: {active_model}")
         
-        INSTRUCTIONS:
-        - Recommend the BEST matching event from the database.
-        - Be short, hype, and use emojis.
-        """
-        
-        # ✅ STRICTLY USING GEMINI 1.5 FLASH
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel(active_model)
         response = model.generate_content(prompt)
         
         return jsonify({"reply": response.text}), 200
 
     except Exception as e:
-        print(f"❌ AI Chat Error: {str(e)}")
-        return jsonify({"reply": f"My brain fried. Error: {str(e)}"}), 200
+        print(f"❌ CHAT ERROR: {e}")
+        return jsonify({"reply": f"Error: {str(e)}"}), 200
 
-# STANDARD ROUTES
+# STANDARD ROUTES (Delete, Like, Update, Checkin, Profile...)
 @app.route('/api/events/<event_id>', methods=['DELETE'])
 def delete_event(event_id):
     db.events.delete_one({'_id': ObjectId(event_id)})
@@ -186,7 +217,6 @@ def check_in(event_id):
     db.events.update_one({'_id': ObjectId(event_id)}, {'$addToSet': {'checkins': data.get('user')}})
     return jsonify({"message": "Checked in"}), 200
 
-# SERVE
 @app.route('/uploads/<path:filename>')
 def serve_uploads(filename): return send_from_directory(UPLOAD_FOLDER, filename)
 @app.route('/profiles/<path:filename>')
