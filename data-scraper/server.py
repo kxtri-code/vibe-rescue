@@ -8,6 +8,7 @@ from bson.objectid import ObjectId
 import json
 import re
 from datetime import datetime
+import uuid 
 
 # 1. SETUP
 load_dotenv()
@@ -16,16 +17,12 @@ CORS(app)
 
 # 2. DATABASE
 MONGO_URI = os.getenv("MONGO_URI")
-if not MONGO_URI: print("⚠️ WARNING: MONGO_URI is missing!")
 client = MongoClient(MONGO_URI)
 db = client.get_database('project_vibe') 
 
 # 3. AI CONFIG
 GENAI_API_KEY = os.getenv("GENAI_API_KEY")
-if not GENAI_API_KEY: 
-    print("⚠️ CRITICAL: GENAI_API_KEY is missing!")
-else: 
-    genai.configure(api_key=GENAI_API_KEY)
+genai.configure(api_key=GENAI_API_KEY)
 
 # 4. FOLDERS
 UPLOAD_FOLDER = 'uploads'
@@ -37,36 +34,17 @@ os.makedirs(PROFILE_FOLDER, exist_ok=True)
 def get_best_model():
     """Prioritizes the production alias for better stability."""
     try:
-        # Get list from Google to be safe
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # ✅ NEW STRATEGY: Use the "Latest" alias. It is the most stable.
-        priorities = [
-            'models/gemini-flash-latest',   # Best for Production Apps
-            'models/gemini-1.5-flash',      # Backup Standard
-            'models/gemini-2.0-flash',      # Experimental (Newest)
-            'models/gemini-pro'             # Old Reliable
-        ]
-        
+        priorities = ['models/gemini-flash-latest', 'models/gemini-1.5-flash', 'models/gemini-2.0-flash', 'models/gemini-pro']
         for p in priorities:
-            if p in available_models:
-                print(f"✅ Selected Model: {p}")
-                return p
-        
-        # Fallback
+            if p in available_models: return p
         return available_models[0]
-    except Exception as e:
-        print(f"❌ Model Selection Error: {e}")
-        return 'models/gemini-flash-latest' # Blind Trust
+    except: return 'models/gemini-flash-latest'
 
-# --- HELPER: GENERATE DETAILS ---
 def generate_event_details(file_path):
     active_model = get_best_model()
-    print(f"🤖 Scanning with: {active_model}")
-    
     myfile = genai.upload_file(file_path)
     prompt = "Analyze this flyer. Extract details into JSON. Keys: event_name, venue, date (YYYY-MM-DD), time, vibe (Array of 3 strings). Do not use markdown."
-    
     model = genai.GenerativeModel(active_model)
     result = model.generate_content([myfile, prompt])
     return result.text
@@ -87,9 +65,7 @@ def scan_flyer():
         filepath = os.path.join(UPLOAD_FOLDER, filename)
         file.save(filepath)
 
-        # AI PROCESSING
         ai_text = generate_event_details(filepath)
-        
         clean_text = re.sub(r'```json\s*|\s*```', '', ai_text).strip()
         try: data = json.loads(clean_text)
         except: data = json.loads(clean_text[clean_text.find('{'):clean_text.rfind('}')+1])
@@ -104,10 +80,7 @@ def scan_flyer():
         new_id = db.events.insert_one(data).inserted_id
         data['_id'] = str(new_id)
         return jsonify(data), 200
-    except Exception as e: 
-        print(f"❌ SCAN ERROR: {e}")
-        # Send the actual error message so the app knows (e.g. Quota Exceeded)
-        return jsonify({"error": f"AI Error: {str(e)}"}), 500
+    except Exception as e: return jsonify({"error": f"AI Error: {str(e)}"}), 500
 
 # B. GET EVENTS
 @app.route('/api/events', methods=['GET'])
@@ -122,28 +95,58 @@ def get_events():
         return jsonify(events), 200
     except Exception as e: return jsonify({"error": str(e)}), 500
 
-# L. 🤖 VIBE AI CONCIERGE
+# M. 🎟️ TICKET SYSTEM (NEW)
+@app.route('/api/tickets/claim', methods=['POST'])
+def claim_ticket():
+    try:
+        data = request.json
+        # Generate a unique secure ID for the QR code
+        ticket_id = str(uuid.uuid4())
+        
+        ticket = {
+            "ticket_id": ticket_id,
+            "event_id": data.get('event_id'),
+            "event_name": data.get('event_name'),
+            "venue": data.get('venue'),
+            "date": data.get('date'),
+            "user_email": data.get('user_email'),
+            "timestamp": datetime.now().isoformat(),
+            "status": "valid"
+        }
+        
+        # Check if already has ticket
+        existing = db.tickets.find_one({"event_id": data.get('event_id'), "user_email": data.get('user_email')})
+        if existing:
+            return jsonify({"message": "You already have a pass!", "ticket": existing['ticket_id']}), 200
+            
+        db.tickets.insert_one(ticket)
+        return jsonify({"message": "Ticket Issued", "ticket_id": ticket_id}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/user/<email>/tickets', methods=['GET'])
+def get_my_tickets(email):
+    try:
+        tickets = list(db.tickets.find({"user_email": email}))
+        for t in tickets: t['_id'] = str(t['_id'])
+        return jsonify(tickets), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# L. AI CONCIERGE
 @app.route('/api/ask-ai', methods=['POST'])
 def ask_ai():
     try:
         data = request.json
         query = data.get('query')
-        
         events = list(db.events.find())
-        context = "Events:\n"
-        for e in events:
-            context += f"- {e.get('event_name')} @ {e.get('venue')} ({e.get('vibe')})\n"
-        
+        context = "Events:\n" + "\n".join([f"- {e.get('event_name')} @ {e.get('venue')} ({e.get('vibe')})" for e in events])
         prompt = f"Role: VibeAI Concierge.\nData: {context}\nUser: {query}\nTask: Recommend best event. Be short & hype."
-        
         active_model = get_best_model()
         model = genai.GenerativeModel(active_model)
         response = model.generate_content(prompt)
-        
         return jsonify({"reply": response.text}), 200
-
-    except Exception as e:
-        return jsonify({"reply": f"Brain freeze! 🧊 ({str(e)})"}), 200
+    except Exception as e: return jsonify({"reply": f"Brain freeze! 🧊 ({str(e)})"}), 200
 
 # STANDARD ROUTES
 @app.route('/api/events/<event_id>', methods=['DELETE'])
